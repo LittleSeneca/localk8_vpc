@@ -1,0 +1,104 @@
+---
+- name: Provision Kubernetes Cluster
+  hosts: k8_worker k8_member k8_primary
+  become: true
+  gather_facts: true
+
+  tasks:
+    # Task to install required packages and Kubernetes repository
+    - name: Install required packages
+      dnf:
+        name:
+          - dnf-plugins-core
+          - yum-utils
+          - device-mapper-persistent-data
+          - lvm2
+          - curl
+        state: present
+
+    - name: Add Kubernetes repository key
+      shell: rpm --import https://packages.cloud.google.com/yum/doc/yum-key.gpg
+
+    - name: Add Kubernetes DNF repository
+      yum_repository:
+        name: kubernetes
+        description: Kubernetes Yum Repository
+        baseurl: https://packages.cloud.google.com/yum/repos/kubernetes-el7-x86_64
+        enabled: yes
+        gpgcheck: yes
+        gpgkey: https://packages.cloud.google.com/yum/doc/yum-key.gpg
+        sslverify: yes
+
+    # Task to install Kubernetes components
+    - name: Install Kubernetes components
+      dnf:
+        name: "{{ item }}"
+        state: present
+      with_items:
+        - kubelet
+        - kubeadm
+        - kubectl
+
+    # Task to disable swap
+    - name: Disable swap
+      command: swapoff -a
+      when: ansible_swaptotal_mb > 0
+
+    # Task to configure sysctl settings for Kubernetes networking
+    - name: Configure sysctl settings
+      sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        sysctl_set: yes
+        state: present
+      with_items:
+        - { name: net.bridge.bridge-nf-call-ip6tables, value: "1" }
+        - { name: net.bridge.bridge-nf-call-iptables, value: "1" }
+        - { name: net.ipv4.ip_forward, value: "1" }
+
+    # Task to initialize Kubernetes on the master node
+    - name: Initialize Kubernetes on master node
+      command: kubeadm init --pod-network-cidr=10.244.0.0/16
+      args:
+        creates: /etc/kubernetes/admin.conf
+      become_user: "{{ ansible_user }}"
+      register: kubeadm_init
+      when: inventory_hostname == groups['k8_primary'][0]
+
+    # Task to set up the kubeconfig for the non-root user
+    - name: Set up kubeconfig for non-root user
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /home/{{ ansible_user }}/admin.conf
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: 0644
+      become: true
+      when: inventory_hostname == groups['k8_primary'][0]
+
+    - name: Set up kubeconfig environment variable for non-root user
+      lineinfile:
+        path: /home/{{ ansible_user }}/.bashrc
+        line: "export KUBECONFIG=/home/{{ ansible_user }}/admin.conf"
+        create: yes
+      become: true
+      when: inventory_hostname == groups['k8_primary'][0]
+
+    # Task to deploy a Calico network addon (you can choose any other CNI)
+    - name: Deploy Calico CNI network
+      command: kubectl apply -f https://docs.projectcalico.org/manifests/calico.yaml
+      become_user: "{{ ansible_user }}"
+      when: inventory_hostname == groups['kube_master'][0]
+
+    # Task to join worker nodes to the cluster
+    - name: Join worker nodes to the cluster
+      command: "{{ hostvars[groups['kube_master'][0]]['kubeadm_init'].stdout_lines[-3] }}"
+      become_user: "{{ ansible_user }}"
+      when: inventory_hostname in groups['k8_member']
+
+  handlers:
+    # Handler to restart kubelet after disabling swap
+    - name: Restart kubelet
+      systemd:
+        name: kubelet
+        state: restarted

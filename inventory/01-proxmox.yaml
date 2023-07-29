@@ -1,0 +1,14 @@
+plugin: community.general.proxmox
+want_proxmox_nodes_ansible_host: false
+user: "{{ lookup('community.general.hashi_vault', 'secret=proxmox/terraform:api_token_user') }}"
+token_id: "{{ lookup('community.general.hashi_vault', 'secret=proxmox/terraform:api_token_id_simple') }}"
+token_secret: "{{ lookup('community.general.hashi_vault', 'secret=proxmox/terraform:api_token_secret') }}"
+validate_certs: false
+url: "{{ lookup('community.general.hashi_vault', 'secret=proxmox/terraform:api_url') }}"
+want_facts: true
+keyed_groups:
+  - key: proxmox_tags_parsed
+    separator: ""
+    prefix: ""
+compose:
+  ansible_host: proxmox_agent_interfaces | selectattr('name', 'equalto', 'eth0') | map(attribute='ip-addresses') | flatten | first | ipaddr('address')
